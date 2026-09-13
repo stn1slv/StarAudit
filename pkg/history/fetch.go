@@ -42,6 +42,9 @@ const (
 	// longer wait would hold a CI job, so it is reported as a rate limit.
 	maxRetryAfterSeconds = 60
 
+	// maxRetryWait bounds the total time spent waiting for one page.
+	maxRetryWait = 2 * time.Minute
+
 	// maxErrorBody bounds how much of an error response is read.
 	maxErrorBody = 64 << 10
 
@@ -106,7 +109,7 @@ func fetchPage(ctx context.Context, client *http.Client, owner, repo, token stri
 
 	weeks, err := backoff.Retry(ctx, func() ([]week, error) {
 		return requestPage(ctx, client, endpoint, token)
-	}, backoff.WithBackOff(backOff), backoff.WithMaxTries(maxAttempts))
+	}, backoff.WithBackOff(backOff), backoff.WithMaxTries(maxAttempts), backoff.WithMaxElapsedTime(maxRetryWait))
 	if err == nil {
 		return weeks, nil
 	}
@@ -122,8 +125,9 @@ func fetchPage(ctx context.Context, client *http.Client, owner, repo, token stri
 		return nil, err
 	}
 
-	// Only a Retry-After that outlasted every attempt ends up here.
-	return nil, &Error{Code: CodeAPIError, Message: "the GitHub API kept asking to retry later", Err: err}
+	// Only Retry-After waits that outlasted the attempts or maxRetryWait end
+	// up here, which is a secondary rate limit.
+	return nil, &Error{Code: CodeRateLimited, Message: "GitHub API secondary rate limit: it kept asking to retry later", Err: err}
 }
 
 // requestPage performs a single request for one page.
@@ -186,6 +190,10 @@ func readPage(resp *http.Response, authenticated bool) ([]week, error) {
 		return nil, backoff.RetryAfter(seconds)
 	case isRateLimit(resp.StatusCode):
 		return nil, backoff.Permanent(refusedError(resp))
+	case resp.StatusCode == http.StatusAccepted:
+		// GitHub's statistics endpoints answer 202 while they compute the
+		// data, so the next attempt can find it ready.
+		return nil, &Error{Code: CodeAPIError, Message: "GitHub is still computing the star history, try again later"}
 	case resp.StatusCode >= http.StatusInternalServerError:
 		return nil, &Error{Code: CodeAPIError, Message: fmt.Sprintf("GitHub API error (status %s)", resp.Status)}
 	default:
@@ -314,7 +322,15 @@ func parseWeeks(weeks []week, now time.Time) (Series, error) {
 	slices.SortStableFunc(sorted, func(a, b week) int { return cmp.Compare(a.Week, b.Week) })
 
 	// Pages are counted from the newest week, so a week that starts during
-	// paging shifts them by one and the same week comes back twice.
+	// paging shifts them by one and the same week comes back twice. Such a
+	// repeat is identical; one with different counts means broken data.
+	for i := 1; i < len(sorted); i++ {
+		if sorted[i].Week == sorted[i-1].Week && !slices.Equal(sorted[i].Days, sorted[i-1].Days) {
+			return Series{}, unexpectedHistory(fmt.Errorf("the week of %s came back twice with different counts",
+				formatDay(time.Unix(sorted[i].Week, 0))))
+		}
+	}
+
 	sorted = slices.CompactFunc(sorted, func(a, b week) bool { return a.Week == b.Week })
 
 	// Days are dated by their position, so a missing week would shift every

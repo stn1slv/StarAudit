@@ -87,6 +87,21 @@ func TestParseWeeksRejectsGaps(t *testing.T) {
 	assert.Equal(t, CodeAPIError, historyErr.Code)
 }
 
+// TestParseWeeksRejectsConflictingDuplicates covers a week that comes back
+// twice with different counts. Keeping either one would hide broken data.
+func TestParseWeeksRejectsConflictingDuplicates(t *testing.T) {
+	weeks := []week{
+		weekAt(sunday, 1, 2, 3, 4, 5, 6, 7),
+		weekAt(sunday, 1, 2, 3, 4, 5, 6, 8),
+	}
+
+	_, err := parseWeeks(weeks, sunday.AddDate(0, 0, 30))
+
+	var historyErr *Error
+	require.ErrorAs(t, err, &historyErr)
+	assert.Equal(t, CodeAPIError, historyErr.Code)
+}
+
 func TestParseWeeksRejectsMalformedWeeks(t *testing.T) {
 	tests := map[string]week{
 		"missing start":  {Week: 0, Total: 0, Days: make([]int, 7)},
@@ -282,6 +297,19 @@ func TestFetchErrors(t *testing.T) {
 			expectedCode:     CodeAPIError,
 			expectedRequests: 1,
 		},
+		"retry after on every attempt": {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Retry-After", "0")
+				w.WriteHeader(http.StatusForbidden)
+			},
+			expectedCode:     CodeRateLimited,
+			expectedRequests: maxAttempts,
+		},
+		"still computing on every attempt": {
+			handler:          func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) },
+			expectedCode:     CodeAPIError,
+			expectedRequests: maxAttempts,
+		},
 	}
 
 	for name, test := range tests {
@@ -350,6 +378,26 @@ func TestFetchHonoursRetryAfter(t *testing.T) {
 	series, err := Fetch(context.Background(), "owner", "repo", "")
 
 	require.NoError(t, err, "a secondary rate limit must be retried")
+	assert.Len(t, series.Days, 14)
+}
+
+// TestFetchRetriesWhileStillComputing covers HTTP 202, which GitHub's
+// statistics endpoints return while they compute the data.
+func TestFetchRetriesWhileStillComputing(t *testing.T) {
+	var attempts atomic.Int32
+
+	stubAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+
+		twoPages(w, r)
+	})
+
+	series, err := Fetch(context.Background(), "owner", "repo", "")
+
+	require.NoError(t, err, "a 202 must be retried")
 	assert.Len(t, series.Days, 14)
 }
 
