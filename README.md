@@ -91,7 +91,7 @@ Run the per-stargazer trust scan on a repository you administer:
 
 ## Arguments and Options
 
-*   **`repositoryOwner/repositoryName`**: (Required) The repository to analyze.
+*   **`repositoryOwner/repositoryName`**: (Required) Exactly one repository, written as `owner/name`.
 *   **`--json`**: Print the star history analysis as JSON on stdout. Log lines go to stderr. Not available with `--trust`.
 *   **`--min-stars` (int)**: Fewer stars than this gives `review` (default: `50`).
 *   **`--burst-review` (float)**: Burst share that gives `review` (default: `0.4`).
@@ -104,7 +104,7 @@ Run the per-stargazer trust scan on a repository you administer:
 *   **`-a, --all`**: Trust scan only. Scan all stargazers. Overrides `--stars`. Use with caution on large repositories.
 *   **`-v, --verbose`**: Enable detailed logs and comparative analysis reports.
 
-Every flag can also be set as an environment variable with the `STARAUDIT_` prefix, for example `STARAUDIT_BURST_REVIEW=0.5`.
+Every flag can also be set as an environment variable with the `STARAUDIT_` prefix, for example `STARAUDIT_BURST_REVIEW=0.5`. Values are checked strictly: switches take `true` or `false`, and `--min-stars` and `--stars` take whole numbers. A value that does not parse is an `invalid_arguments` error.
 
 ### Exit codes
 
