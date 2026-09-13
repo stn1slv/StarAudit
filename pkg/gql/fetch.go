@@ -42,7 +42,24 @@ const (
 	// rateLimitThreshold is the amount of remaining API points below which
 	// requests start being spaced out.
 	rateLimitThreshold = 10
+
+	// firstPageCursor stands for the first page of stargazers, which is
+	// fetched without a cursor.
+	firstPageCursor = "firstpage"
 )
+
+// ErrStargazersRestricted is returned when GitHub withholds the stargazer list
+// of a repository. Since 2026-06-30, GitHub only shows it to the admins and
+// collaborators of the repository, whatever the scopes of the token.
+var ErrStargazersRestricted = errors.New("GitHub only shows the stargazers of a repository to its admins and collaborators, so GITHUB_TOKEN must belong to one of them")
+
+// errForbidden marks a GraphQL error that retrying cannot fix.
+var errForbidden = errors.New("the GitHub API denied access")
+
+// errNoStargazerCount marks an empty first page without a star count, as
+// cached by versions that did not query it. Such a page cannot be told apart
+// from a restricted list.
+var errNoStargazerCount = errors.New("empty first page without a star count")
 
 // blacklistedUsers contains the list of users that can't be
 // fetched from the GitHub API. When one of these users is found
@@ -161,9 +178,9 @@ func FetchStargazers(ctx stdcontext.Context, starauditCtx *context.Context) (cur
 				1)
 		}
 
-		response, err := fetchOrCache(ctx, starauditCtx, client, paginatedRequestBody, listFilePagination(lastCursor))
+		response, err := fetchOrCache(ctx, starauditCtx, client, paginatedRequestBody, listFilePagination(lastCursor), lastCursor == "")
 		if err != nil {
-			return nil, 0, disgo.FailStepf("unable to fetch stargazers: %v", err)
+			return nil, 0, disgo.FailStepf("unable to fetch stargazers: %w", err)
 		}
 
 		stargazers = append(stargazers, response.Repository.Stargazers)
@@ -286,7 +303,7 @@ func fetchYearlyContributions(
 ) (*listStargazersResponse, error) {
 	// If this isn't the first page, inject the cursor value.
 	paginatedRequestBody := requestBody
-	if currentCursor != "firstpage" {
+	if currentCursor != firstPageCursor {
 		paginatedRequestBody = strings.Replace(
 			paginatedRequestBody,
 			fmt.Sprintf("stargazers(first:%d){", contribPagination),
@@ -304,7 +321,7 @@ func fetchYearlyContributions(
 	yearlyRequestBody := strings.Replace(paginatedRequestBody, "$dateFrom", from.Format(iso8601Format), 1)
 	yearlyRequestBody = strings.Replace(yearlyRequestBody, "$dateTo", to.Format(iso8601Format), 1)
 
-	response, err := fetchOrCache(ctx, starauditCtx, client, yearlyRequestBody, contribFilePagination(currentCursor, currentYear))
+	response, err := fetchOrCache(ctx, starauditCtx, client, yearlyRequestBody, contribFilePagination(currentCursor, currentYear), currentCursor == firstPageCursor)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch user contributions at cursor %s: %w", currentCursor, err)
 	}
@@ -478,7 +495,7 @@ func getCursor(cursors []string, page int) string {
 		return cursors[page-2]
 	}
 
-	return "firstpage"
+	return firstPageCursor
 }
 
 // fetchResult carries what a single successful API call produced.
@@ -521,6 +538,11 @@ func doRequest(ctx stdcontext.Context, client *http.Client, token, body string) 
 				fmt.Errorf("the GitHub API rejected the credentials (status %s), check GITHUB_TOKEN", resp.Status))
 		}
 
+		// Missing permissions will not be granted by the next attempt either.
+		if errors.Is(parseErr, errForbidden) {
+			return fetchResult{}, backoff.Permanent(parseErr)
+		}
+
 		if parseErr != nil {
 			return fetchResult{}, fmt.Errorf("unusable response from the GitHub API (status %s): %w", resp.Status, parseErr)
 		}
@@ -545,12 +567,17 @@ func doRequest(ctx stdcontext.Context, client *http.Client, token, body string) 
 //
 // A cache entry that cannot be parsed is discarded and refetched rather than
 // failing the whole scan, since an interrupted run can leave one behind.
+//
+// When firstPage is set, the response is also checked for a restricted
+// stargazer list. Such a page is never cached, and a cached first page that
+// fails the check is refetched.
 func fetchOrCache(
 	ctx stdcontext.Context,
 	starauditCtx *context.Context,
 	client *http.Client,
 	requestBody string,
 	cacheKey string,
+	firstPage bool,
 ) (*listStargazersResponse, error) {
 	cached, filename, err := getCache(starauditCtx, cacheKey) // nolint:bodyclose // parseResponse closes the body.
 	if err != nil {
@@ -559,11 +586,15 @@ func fetchOrCache(
 
 	if cached != nil {
 		response, _, err := parseResponse(cached)
+		if err == nil && firstPage {
+			err = checkFirstPage(response)
+		}
+
 		if err == nil {
 			return response, nil
 		}
 
-		disgo.Debugf("Discarding unreadable cache entry %q: %v\n", filename, err)
+		disgo.Debugf("Discarding unusable cache entry %q: %v\n", filename, err)
 
 		if err := os.Remove(filename); err != nil {
 			return nil, fmt.Errorf("unable to remove corrupt cache entry %q: %w", filename, err)
@@ -573,6 +604,12 @@ func fetchOrCache(
 	response, responseBody, err := doRequest(ctx, client, starauditCtx.GithubToken, requestBody)
 	if err != nil {
 		return nil, err
+	}
+
+	if firstPage {
+		if err := checkFirstPage(response); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := putCache(starauditCtx, cacheKey, responseBody); err != nil {
@@ -603,10 +640,49 @@ func parseResponse(resp *http.Response) (*listStargazersResponse, []byte, error)
 	}
 
 	if len(response.Errors) != 0 {
+		for _, gqlErr := range response.Errors {
+			if gqlErr.Type == "FORBIDDEN" {
+				return nil, responseBody, forbiddenError(gqlErr)
+			}
+		}
+
 		return nil, responseBody, fmt.Errorf("error while querying user data: %v [%s:%s]", response.Errors[0].Message, response.Errors[0].Extensions.ArgumentName, response.Errors[0].Extensions.Name)
 	}
 
 	return &response, responseBody, nil
+}
+
+// forbiddenError converts a FORBIDDEN GraphQL error into one that is not
+// retried. Only a refusal of the stargazer list is blamed on the restriction,
+// since GitHub also answers FORBIDDEN for SAML enforcement or IP allow lists.
+func forbiddenError(gqlErr gqlError) error {
+	err := fmt.Errorf("%w: %s", errForbidden, gqlErr.Message)
+
+	if len(gqlErr.Path) >= 2 && gqlErr.Path[0] == "repository" && gqlErr.Path[1] == "stargazers" {
+		return fmt.Errorf("%w (%w)", ErrStargazersRestricted, err)
+	}
+
+	return err
+}
+
+// checkFirstPage rejects a first page that does not hold the stargazers of the
+// repository. Classic tokens get a restricted list as an empty page with no
+// error, while the repository still reports its star count.
+func checkFirstPage(response *listStargazersResponse) error {
+	if len(response.Repository.Stargazers.Users) != 0 {
+		return nil
+	}
+
+	count := response.Repository.StargazerCount
+
+	switch {
+	case count == nil:
+		return errNoStargazerCount
+	case *count > 0:
+		return fmt.Errorf("%w (the repository has %d stars, but the list is empty)", ErrStargazersRestricted, *count)
+	default:
+		return nil
+	}
 }
 
 // updateUsers updates a slice of user from the data in a list stargazer response.
