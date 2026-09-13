@@ -57,6 +57,36 @@ func TestParseWeeksWithoutWeeks(t *testing.T) {
 	assert.Empty(t, series.Days)
 }
 
+// TestParseWeeksDropsDuplicateWeeks covers a week that starts between two
+// page requests: the pages shift by one and the same week comes back twice.
+func TestParseWeeksDropsDuplicateWeeks(t *testing.T) {
+	weeks := []week{
+		weekAt(sunday.AddDate(0, 0, 7), 8, 9, 10, 11, 12, 13, 14),
+		weekAt(sunday.AddDate(0, 0, 7), 8, 9, 10, 11, 12, 13, 14),
+		weekAt(sunday, 1, 2, 3, 4, 5, 6, 7),
+	}
+
+	series, err := parseWeeks(weeks, sunday.AddDate(0, 0, 30))
+
+	require.NoError(t, err)
+	assert.Equal(t, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}, series.Days)
+}
+
+// TestParseWeeksRejectsGaps guards the dates: a missing week would shift
+// every later day by a week without any error.
+func TestParseWeeksRejectsGaps(t *testing.T) {
+	weeks := []week{
+		weekAt(sunday, 1, 2, 3, 4, 5, 6, 7),
+		weekAt(sunday.AddDate(0, 0, 14), 8, 9, 10, 11, 12, 13, 14),
+	}
+
+	_, err := parseWeeks(weeks, sunday.AddDate(0, 0, 30))
+
+	var historyErr *Error
+	require.ErrorAs(t, err, &historyErr)
+	assert.Equal(t, CodeAPIError, historyErr.Code)
+}
+
 func TestParseWeeksRejectsMalformedWeeks(t *testing.T) {
 	tests := map[string]week{
 		"missing start":  {Week: 0, Total: 0, Days: make([]int, 7)},
@@ -219,8 +249,38 @@ func TestFetchErrors(t *testing.T) {
 
 				writeWeeks(w)
 			},
+			expectedCode: CodeAPIError,
+			// Each page is checked as it arrives, so no further page is requested.
+			expectedRequests: 1,
+		},
+		"retry after longer than a CI job should wait": {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Retry-After", "120")
+				w.WriteHeader(http.StatusForbidden)
+			},
+			expectedCode:     CodeRateLimited,
+			expectedRequests: 1,
+		},
+		"secondary rate limit without retry after": {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, `{"message":"You have exceeded a secondary rate limit."}`)
+			},
+			expectedCode:     CodeRateLimited,
+			expectedRequests: 1,
+		},
+		"too many requests without headers": {
+			handler:          func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTooManyRequests) },
+			expectedCode:     CodeRateLimited,
+			expectedRequests: 1,
+		},
+		"forbidden for another reason": {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, `{"message":"Resource protected by organization SAML enforcement."}`)
+			},
 			expectedCode:     CodeAPIError,
-			expectedRequests: 2,
+			expectedRequests: 1,
 		},
 	}
 

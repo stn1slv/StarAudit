@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
@@ -36,9 +38,18 @@ const (
 	// maxAttempts is how many times a page is requested before giving up.
 	maxAttempts = 5
 
+	// maxRetryAfterSeconds is the longest Retry-After worth waiting for. A
+	// longer wait would hold a CI job, so it is reported as a rate limit.
+	maxRetryAfterSeconds = 60
+
+	// maxErrorBody bounds how much of an error response is read.
+	maxErrorBody = 64 << 10
+
 	requestTimeout = 30 * time.Second
 
 	day = 24 * time.Hour
+
+	weekSeconds = int64(7 * day / time.Second)
 )
 
 // week is one element of the star history response.
@@ -70,6 +81,12 @@ func Fetch(ctx context.Context, owner, repo, token string) (Series, error) {
 
 		if len(pageWeeks) == 0 {
 			break
+		}
+
+		// Checked page by page, so that a broken response is reported at
+		// once instead of after up to maxPages requests.
+		if err := validateWeeks(pageWeeks); err != nil {
+			return Series{}, err
 		}
 
 		weeks = append(weeks, pageWeeks...)
@@ -159,7 +176,16 @@ func readPage(resp *http.Response, authenticated bool) ([]week, error) {
 			})
 		}
 
+		if seconds > maxRetryAfterSeconds {
+			return nil, backoff.Permanent(&Error{
+				Code:    CodeRateLimited,
+				Message: fmt.Sprintf("GitHub asked to wait %d seconds before the next request (secondary rate limit)", seconds),
+			})
+		}
+
 		return nil, backoff.RetryAfter(seconds)
+	case isRateLimit(resp.StatusCode):
+		return nil, backoff.Permanent(refusedError(resp))
 	case resp.StatusCode >= http.StatusInternalServerError:
 		return nil, &Error{Code: CodeAPIError, Message: fmt.Sprintf("GitHub API error (status %s)", resp.Status)}
 	default:
@@ -218,13 +244,66 @@ func (w week) validate() error {
 	return nil
 }
 
+// refusedError explains a 403 or 429 without rate limit headers. GitHub
+// answers a secondary rate limit this way too, and says so in the message.
+func refusedError(resp *http.Response) *Error {
+	message := apiMessage(resp)
+
+	if resp.StatusCode == http.StatusTooManyRequests || strings.Contains(strings.ToLower(message), "rate limit") {
+		return &Error{Code: CodeRateLimited, Message: joinMessage("GitHub API secondary rate limit exceeded", message)}
+	}
+
+	return &Error{
+		Code:    CodeAPIError,
+		Message: joinMessage(fmt.Sprintf("the GitHub API refused the request (status %s)", resp.Status), message),
+	}
+}
+
+// apiMessage returns the message of a GitHub error response. It only serves
+// to explain the error, so a body that cannot be read gives an empty message.
+func apiMessage(resp *http.Response) string {
+	var body struct {
+		Message string `json:"message"`
+	}
+
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxErrorBody)).Decode(&body); err != nil {
+		return ""
+	}
+
+	return body.Message
+}
+
+// joinMessage appends the message GitHub gave, when there is one.
+func joinMessage(summary, detail string) string {
+	if detail == "" {
+		return summary
+	}
+
+	return summary + ": " + detail
+}
+
+// validateWeeks checks every week of a response.
+func validateWeeks(weeks []week) error {
+	for _, w := range weeks {
+		if err := w.validate(); err != nil {
+			return unexpectedHistory(err)
+		}
+	}
+
+	return nil
+}
+
+// unexpectedHistory reports a response that does not match the documented
+// format.
+func unexpectedHistory(err error) *Error {
+	return &Error{Code: CodeAPIError, Message: "unexpected star history from the GitHub API", Err: err}
+}
+
 // parseWeeks turns the weeks of every page into one daily series. Days after
 // now are dropped, since the newest week also covers days to come.
 func parseWeeks(weeks []week, now time.Time) (Series, error) {
-	for _, w := range weeks {
-		if err := w.validate(); err != nil {
-			return Series{}, &Error{Code: CodeAPIError, Message: "unexpected star history from the GitHub API", Err: err}
-		}
+	if err := validateWeeks(weeks); err != nil {
+		return Series{}, err
 	}
 
 	if len(weeks) == 0 {
@@ -232,7 +311,19 @@ func parseWeeks(weeks []week, now time.Time) (Series, error) {
 	}
 
 	sorted := slices.Clone(weeks)
-	slices.SortFunc(sorted, func(a, b week) int { return cmp.Compare(a.Week, b.Week) })
+	slices.SortStableFunc(sorted, func(a, b week) int { return cmp.Compare(a.Week, b.Week) })
+
+	// Pages are counted from the newest week, so a week that starts during
+	// paging shifts them by one and the same week comes back twice.
+	sorted = slices.CompactFunc(sorted, func(a, b week) bool { return a.Week == b.Week })
+
+	// Days are dated by their position, so a missing week would shift every
+	// later date.
+	for i := 1; i < len(sorted); i++ {
+		if sorted[i].Week-sorted[i-1].Week != weekSeconds {
+			return Series{}, unexpectedHistory(fmt.Errorf("weeks %d and %d are not 7 days apart", sorted[i-1].Week, sorted[i].Week))
+		}
+	}
 
 	series := Series{
 		Start: time.Unix(sorted[0].Week, 0).UTC(),

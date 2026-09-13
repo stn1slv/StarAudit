@@ -73,7 +73,9 @@ func (t Thresholds) Validate() error {
 	}
 
 	for _, share := range shares {
-		if share.value < 0 || share.value > 1 {
+		// Written as "not inside", because NaN fails every comparison and
+		// would slip through a "below 0 or above 1" check.
+		if !(share.value >= 0 && share.value <= 1) {
 			return fmt.Errorf("%s must be between 0 and 1, got %v", share.name, share.value)
 		}
 	}

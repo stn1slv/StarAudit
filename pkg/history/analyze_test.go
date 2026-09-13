@@ -1,6 +1,7 @@
 package history
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -192,6 +193,11 @@ func TestThresholdsValidate(t *testing.T) {
 		"suspicious below review":   func(t *Thresholds) { t.BurstSuspicious = 0.3 },
 		"burst review above one":    func(t *Thresholds) { t.BurstReview = 2 },
 		"burst suspicious negative": func(t *Thresholds) { t.BurstSuspicious = -1 },
+		// NaN fails every comparison, so a range check written as
+		// "below 0 or above 1" lets it through and disables the rule.
+		"not a number":      func(t *Thresholds) { t.PeakReview = math.NaN() },
+		"infinite share":    func(t *Thresholds) { t.TailSuspicious = math.Inf(1) },
+		"negative infinity": func(t *Thresholds) { t.BurstReview = math.Inf(-1) },
 	}
 
 	for name, change := range tests {
