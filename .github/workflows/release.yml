@@ -45,3 +45,73 @@ jobs:
           --verify-tag
           --title "Release $GITHUB_REF_NAME"
           --generate-notes
+
+  update-homebrew:
+    name: Update Homebrew formula
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt
+
+      - name: Write formula
+        run: |
+          URL="https://github.com/stn1slv/StarAudit/releases/download/${GITHUB_REF_NAME}"
+          SHA_AMD64=$(awk '$2 == "staraudit-darwin-amd64" {print $1}' checksums.txt)
+          SHA_ARM64=$(awk '$2 == "staraudit-darwin-arm64" {print $1}' checksums.txt)
+          if [ -z "$SHA_AMD64" ] || [ -z "$SHA_ARM64" ]; then
+            echo "::error::checksums.txt has no darwin binaries"
+            exit 1
+          fi
+
+          cat > staraudit.rb <<FORMULA
+          # typed: false
+          # frozen_string_literal: true
+
+          class Staraudit < Formula
+            desc "Detect fake GitHub stars by analyzing star history bursts"
+            homepage "https://github.com/stn1slv/StarAudit"
+            license "MIT"
+
+            depends_on :macos
+
+            on_macos do
+              if Hardware::CPU.intel?
+                url "${URL}/staraudit-darwin-amd64"
+                sha256 "${SHA_AMD64}"
+              end
+              if Hardware::CPU.arm?
+                url "${URL}/staraudit-darwin-arm64"
+                sha256 "${SHA_ARM64}"
+              end
+            end
+
+            def install
+              bin.install Dir["staraudit-darwin-*"].first => "staraudit"
+            end
+
+            test do
+              output = shell_output("#{bin}/staraudit --json owner/ 2>&1", 1)
+              assert_match "invalid_arguments", output
+            end
+          end
+          FORMULA
+
+      - name: Push formula to the tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::The HOMEBREW_TAP_TOKEN secret is not set"
+            exit 1
+          fi
+          path=repos/stn1slv/homebrew-tap/contents/Formula/staraudit.rb
+          sha=$(gh api "$path" --jq .sha)
+          gh api --method PUT "$path" \
+            -f message="chore: update staraudit to ${GITHUB_REF_NAME#v}" \
+            -f content="$(base64 -w 0 staraudit.rb)" \
+            -f sha="$sha" > /dev/null
