@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/Ullaakut/disgo"
 	"github.com/Ullaakut/disgo/style"
+	"github.com/spf13/cast"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	staraudit_context "github.com/stn1slv/staraudit/pkg/context"
@@ -35,93 +37,129 @@ const (
 // codeInvalidArguments is the JSON error code for unusable command line input.
 const codeInvalidArguments = "invalid_arguments"
 
-func parseArguments() error {
-	viper.SetEnvPrefix("staraudit")
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+// errMissingRepository is returned when no repository argument is given.
+var errMissingRepository = errors.New("missing required repository argument")
 
+// fetchHistory is a variable so that tests can replace the GitHub API.
+var fetchHistory = history.Fetch
+
+// parseArguments defines and parses the command line. The flags and the
+// settings are returned even when parsing fails, so that --json still
+// selects the format of the error.
+func parseArguments(args []string, stderr io.Writer) (*pflag.FlagSet, *viper.Viper, error) {
 	defaults := history.DefaultThresholds()
 
-	pflag.BoolP("verbose", "v", false, "Show extra logs (including comparative reports)")
-	pflag.Bool("trust", false, "Run the per-stargazer trust scan instead of the star history analysis (only works on repositories you administer)")
-	pflag.Bool("json", false, "Print the star history analysis as JSON on stdout")
-	pflag.Int("min-stars", defaults.MinStars, "Fewer stars than this gives a review verdict")
-	pflag.Float64("burst-review", defaults.BurstReview, "Share of stars in the busiest 14 days that gives a review verdict")
-	pflag.Float64("burst-suspicious", defaults.BurstSuspicious, "Share of stars in the busiest 14 days that can give a suspicious verdict")
-	pflag.Float64("tail-suspicious", defaults.TailSuspicious, "Stars in the 60 days after the burst, as a share of the burst, below which the burst is suspicious")
-	pflag.Float64("peak-review", defaults.PeakReview, "Share of stars on a single day that gives a review verdict")
-	pflag.BoolP("all", "a", false, "Trust scan: scan every stargazer of the repository (overrides --stars)")
-	pflag.UintP("stars", "s", 1000, "Trust scan: maximum amount of stars to scan")
-	pflag.StringP("cachedir", "c", "./data", "Trust scan: directory in which to store cache data")
+	// Not the default ExitOnError: pflag would then exit with code 2, which
+	// means "review".
+	flags := pflag.NewFlagSet("staraudit", pflag.ContinueOnError)
+	flags.SetOutput(stderr)
 
-	viper.AutomaticEnv()
-
-	pflag.Parse()
-
-	err := viper.BindPFlags(pflag.CommandLine)
-	if err != nil {
-		return err
+	// A new flag set has no usage function of its own.
+	flags.Usage = func() {
+		_, _ = fmt.Fprintln(stderr, "Usage: staraudit [flags] owner/repo")
+		flags.PrintDefaults()
 	}
 
-	if len(pflag.Args()) == 0 {
-		disgo.Infoln("Missing required repository argument")
-		pflag.Usage()
-		os.Exit(0)
+	flags.BoolP("verbose", "v", false, "Show extra logs (including comparative reports)")
+	flags.Bool("trust", false, "Run the per-stargazer trust scan instead of the star history analysis (only works on repositories you administer)")
+	flags.Bool("json", false, "Print the star history analysis as JSON on stdout")
+	flags.Int("min-stars", defaults.MinStars, "Fewer stars than this gives a review verdict")
+	flags.Float64("burst-review", defaults.BurstReview, "Share of stars in the busiest 14 days that gives a review verdict")
+	flags.Float64("burst-suspicious", defaults.BurstSuspicious, "Share of stars in the busiest 14 days that can give a suspicious verdict")
+	flags.Float64("tail-suspicious", defaults.TailSuspicious, "Stars in the 60 days after the burst, as a share of the burst, below which the burst is suspicious")
+	flags.Float64("peak-review", defaults.PeakReview, "Share of stars on a single day that gives a review verdict")
+	flags.BoolP("all", "a", false, "Trust scan: scan every stargazer of the repository (overrides --stars)")
+	flags.UintP("stars", "s", 1000, "Trust scan: maximum amount of stars to scan")
+	flags.StringP("cachedir", "c", "./data", "Trust scan: directory in which to store cache data")
+
+	settings := viper.New()
+	settings.SetEnvPrefix("staraudit")
+	settings.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	settings.AutomaticEnv()
+
+	parseErr := flags.Parse(args)
+
+	if err := settings.BindPFlags(flags); err != nil {
+		return flags, settings, err
 	}
 
-	return nil
+	if parseErr != nil {
+		return flags, settings, parseErr
+	}
+
+	if flags.NArg() == 0 {
+		return flags, settings, errMissingRepository
+	}
+
+	return flags, settings, nil
 }
 
 func main() {
-	code, err := run()
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// run executes the command and returns its exit code. It is separated from
+// main so that deferred cleanups run before the process exits, and so that
+// tests can call it.
+func run(args []string, stdout, stderr io.Writer) int {
+	code, err := runCommand(args, stdout, stderr)
 	if err != nil {
 		disgo.Errorln(style.Failure(style.SymbolCross, " ", err))
 	}
 
-	os.Exit(code)
+	return code
 }
 
-// run executes the command and returns its exit code. It is separated from
-// main so that deferred cleanups run before the process exits.
-func run() (int, error) {
-	err := parseArguments()
-	if err != nil {
-		return exitError, err
+func runCommand(args []string, stdout, stderr io.Writer) (int, error) {
+	flags, settings, err := parseArguments(args, stderr)
+	if errors.Is(err, pflag.ErrHelp) {
+		return exitPass, nil
 	}
 
-	jsonOutput := viper.GetBool("json")
+	jsonOutput := settings.GetBool("json")
 
 	// With --json, stdout carries only the JSON document, so logs go to stderr.
-	terminalOptions := []func(*disgo.Terminal){
-		disgo.WithColors(!jsonOutput),
-		disgo.WithDebug(viper.GetBool("verbose")),
-	}
+	logs := stdout
 	if jsonOutput {
-		terminalOptions = append(terminalOptions, disgo.WithDefaultOutput(os.Stderr))
+		logs = stderr
 	}
 
-	disgo.SetTerminalOptions(terminalOptions...)
+	disgo.SetTerminalOptions(
+		disgo.WithColors(!jsonOutput),
+		disgo.WithDebug(settings.GetBool("verbose")),
+		disgo.WithDefaultOutput(logs),
+		disgo.WithErrorOutput(stderr),
+	)
+
+	repository := flags.Arg(0)
+
+	if err != nil {
+		if errors.Is(err, errMissingRepository) {
+			flags.Usage()
+		}
+
+		return exitError, reportFailure(stdout, jsonOutput, repository, codeInvalidArguments, err)
+	}
 
 	// Handle OS signals for graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	repository := pflag.Arg(0)
-
 	// Split repository into repo owner & repo name.
 	repoInfo := strings.Split(repository, "/")
 	if len(repoInfo) != 2 {
-		return exitError, reportFailure(jsonOutput, repository, codeInvalidArguments,
+		return exitError, reportFailure(stdout, jsonOutput, repository, codeInvalidArguments,
 			fmt.Errorf("invalid repository %q: should be of the form \"repoOwner/repoName\"", repository))
 	}
 
 	token := os.Getenv("GITHUB_TOKEN")
 
-	if !viper.GetBool("trust") {
-		return analyzeHistory(ctx, repository, repoInfo[0], repoInfo[1], token, jsonOutput)
+	if !settings.GetBool("trust") {
+		return analyzeHistory(ctx, stdout, settings, repository, repoInfo[0], repoInfo[1], token, jsonOutput)
 	}
 
 	if jsonOutput {
-		return exitError, reportFailure(jsonOutput, repository, codeInvalidArguments,
+		return exitError, reportFailure(stdout, jsonOutput, repository, codeInvalidArguments,
 			errors.New("--json is only available for the star history analysis, not with --trust"))
 	}
 
@@ -133,10 +171,10 @@ func run() (int, error) {
 		RepoOwner:          repoInfo[0],
 		RepoName:           repoInfo[1],
 		GithubToken:        token,
-		Stars:              viper.GetUint("stars"),
-		CacheDirectoryPath: viper.GetString("cachedir"),
-		ScanAll:            viper.GetBool("all"),
-		Verbose:            viper.GetBool("verbose"),
+		Stars:              settings.GetUint("stars"),
+		CacheDirectoryPath: settings.GetString("cachedir"),
+		ScanAll:            settings.GetBool("all"),
+		Verbose:            settings.GetBool("verbose"),
 	}
 
 	if err := detectFakeStars(ctx, starauditCtx); err != nil {
@@ -148,24 +186,23 @@ func run() (int, error) {
 
 // analyzeHistory runs the star history analysis and maps its verdict to an
 // exit code.
-func analyzeHistory(ctx context.Context, repository, owner, name, token string, jsonOutput bool) (int, error) {
-	thresholds := history.Thresholds{
-		MinStars:        viper.GetInt("min-stars"),
-		BurstReview:     viper.GetFloat64("burst-review"),
-		BurstSuspicious: viper.GetFloat64("burst-suspicious"),
-		TailSuspicious:  viper.GetFloat64("tail-suspicious"),
-		PeakReview:      viper.GetFloat64("peak-review"),
-	}
-
-	if err := thresholds.Validate(); err != nil {
-		return exitError, reportFailure(jsonOutput, repository, codeInvalidArguments, err)
+func analyzeHistory(
+	ctx context.Context,
+	stdout io.Writer,
+	settings *viper.Viper,
+	repository, owner, name, token string,
+	jsonOutput bool,
+) (int, error) {
+	thresholds, err := thresholdsFrom(settings)
+	if err != nil {
+		return exitError, reportFailure(stdout, jsonOutput, repository, codeInvalidArguments, err)
 	}
 
 	if token == "" {
 		disgo.Infoln(style.Important("GITHUB_TOKEN is not set, so GitHub allows only 60 requests per hour"))
 	}
 
-	series, err := history.Fetch(ctx, owner, name, token)
+	series, err := fetchHistory(ctx, owner, name, token)
 	if err != nil {
 		// An interrupted run has nothing to report.
 		if errors.Is(err, context.Canceled) {
@@ -179,15 +216,15 @@ func analyzeHistory(ctx context.Context, repository, owner, name, token string, 
 			code = historyErr.Code
 		}
 
-		return exitError, reportFailure(jsonOutput, repository, code, fmt.Errorf("unable to fetch the star history: %w", err))
+		return exitError, reportFailure(stdout, jsonOutput, repository, code, fmt.Errorf("unable to fetch the star history: %w", err))
 	}
 
 	result := history.Analyze(series, thresholds)
 
 	if jsonOutput {
-		err = history.RenderJSON(os.Stdout, repository, time.Now(), result)
+		err = history.RenderJSON(stdout, repository, time.Now(), result)
 	} else {
-		err = history.RenderText(os.Stdout, repository, result)
+		err = history.RenderText(stdout, repository, result)
 	}
 
 	if err != nil {
@@ -197,14 +234,47 @@ func analyzeHistory(ctx context.Context, repository, owner, name, token string, 
 	return exitCode(result.Verdict), nil
 }
 
+// thresholdsFrom reads the thresholds from the flags and STARAUDIT_*
+// variables, and validates them. It uses the error-returning cast functions,
+// because the viper getters silently turn a value that does not parse into 0.
+func thresholdsFrom(settings *viper.Viper) (history.Thresholds, error) {
+	minStars, err := cast.ToIntE(settings.Get("min-stars"))
+	if err != nil {
+		return history.Thresholds{}, fmt.Errorf("min-stars: %w", err)
+	}
+
+	thresholds := history.Thresholds{MinStars: minStars}
+
+	shares := []struct {
+		key   string
+		value *float64
+	}{
+		{"burst-review", &thresholds.BurstReview},
+		{"burst-suspicious", &thresholds.BurstSuspicious},
+		{"tail-suspicious", &thresholds.TailSuspicious},
+		{"peak-review", &thresholds.PeakReview},
+	}
+
+	for _, share := range shares {
+		value, err := cast.ToFloat64E(settings.Get(share.key))
+		if err != nil {
+			return history.Thresholds{}, fmt.Errorf("%s: %w", share.key, err)
+		}
+
+		*share.value = value
+	}
+
+	return thresholds, thresholds.Validate()
+}
+
 // reportFailure also writes the error as a JSON document on stdout when
-// --json is set, and returns it for main to print on stderr.
-func reportFailure(jsonOutput bool, repository, code string, err error) error {
+// --json is set, and returns it for run to print on stderr.
+func reportFailure(stdout io.Writer, jsonOutput bool, repository, code string, err error) error {
 	if !jsonOutput {
 		return err
 	}
 
-	if renderErr := history.RenderErrorJSON(os.Stdout, repository, code, err.Error()); renderErr != nil {
+	if renderErr := history.RenderErrorJSON(stdout, repository, code, err.Error()); renderErr != nil {
 		return errors.Join(err, renderErr)
 	}
 
