@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/stn1slv/staraudit/pkg/context"
+	"github.com/stn1slv/staraudit/v2/pkg/context"
 )
 
 // getCache returns the cached response for the given key, or a nil response

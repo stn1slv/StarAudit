@@ -19,11 +19,11 @@ import (
 	"github.com/Ullaakut/disgo/style"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
-	staraudit_context "github.com/stn1slv/staraudit/pkg/context"
-	"github.com/stn1slv/staraudit/pkg/gql"
-	"github.com/stn1slv/staraudit/pkg/history"
-	"github.com/stn1slv/staraudit/pkg/signature"
-	"github.com/stn1slv/staraudit/pkg/trust"
+	staraudit_context "github.com/stn1slv/staraudit/v2/pkg/context"
+	"github.com/stn1slv/staraudit/v2/pkg/gql"
+	"github.com/stn1slv/staraudit/v2/pkg/history"
+	"github.com/stn1slv/staraudit/v2/pkg/signature"
+	"github.com/stn1slv/staraudit/v2/pkg/trust"
 )
 
 // Exit codes. The verdict codes let CI jobs act on the result without

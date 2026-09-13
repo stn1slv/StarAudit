@@ -15,8 +15,8 @@ import (
 	"os"
 
 	"github.com/Ullaakut/disgo"
-	staraudit_context "github.com/stn1slv/staraudit/pkg/context"
-	"github.com/stn1slv/staraudit/pkg/trust"
+	staraudit_context "github.com/stn1slv/staraudit/v2/pkg/context"
+	"github.com/stn1slv/staraudit/v2/pkg/trust"
 )
 
 // SignedReport represents a report that has been signed

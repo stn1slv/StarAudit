@@ -245,6 +245,8 @@ A repository with 0 stars is not an error: it gets `review` with `few_stars`.
 
 This change ships as StarAudit 2.0.0, because the default mode and the exit codes change. The Go module path stays `github.com/stn1slv/staraudit` (decided on 2026-09-13), so the release is the `v2.0.0` tag with its GitHub release binaries, and `go install github.com/stn1slv/staraudit@latest` keeps resolving to 1.x. The README gets an "Upgrading from 1.x" section that says so.
 
+Update for v2.0.1: the module path moved to `github.com/stn1slv/staraudit/v2`, because Go rejects the v2.0.0 tag with the old path ("module path must match major version"). From v2.0.1 on, `go install github.com/stn1slv/staraudit/v2@latest` works, and each release also carries a `checksums.txt` with the SHA-256 hash of every binary.
+
 ## Decisions added during planning
 
 - `--json` together with `--trust` is rejected with `invalid_arguments`, because the trust scan has no JSON output.

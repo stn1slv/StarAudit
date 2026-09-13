@@ -10,8 +10,8 @@ import (
 	"github.com/Ullaakut/disgo"
 	"github.com/Ullaakut/disgo/style"
 	"github.com/montanaflynn/stats"
-	staraudit_context "github.com/stn1slv/staraudit/pkg/context"
-	"github.com/stn1slv/staraudit/pkg/gql"
+	staraudit_context "github.com/stn1slv/staraudit/v2/pkg/context"
+	"github.com/stn1slv/staraudit/v2/pkg/gql"
 )
 
 // Factor represents one of the trust factors used to compute
