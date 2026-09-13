@@ -66,7 +66,13 @@ cd staraudit
 make build
 ```
 
-Prebuilt binaries for Linux, macOS and Windows are attached to each [GitHub release](https://github.com/stn1slv/staraudit/releases).
+Prebuilt binaries for Linux, macOS and Windows are attached to each [GitHub release](https://github.com/stn1slv/staraudit/releases), together with a `checksums.txt` file of SHA-256 hashes. Check a download with `sha256sum --check --ignore-missing checksums.txt` (on macOS: `shasum -a 256 --check --ignore-missing checksums.txt`).
+
+To install with Go instead:
+
+```bash
+go install github.com/stn1slv/staraudit/v2@latest
+```
 
 ### Usage
 
@@ -163,7 +169,7 @@ StarAudit 2.0.0 changes the default mode:
 *   `staraudit owner/repo` now runs the star history analysis. Add `--trust` to run the per-stargazer scan of 1.x.
 *   `--stars`, `--all` and `--cachedir` only apply with `--trust`.
 *   A successful run can now exit with 2 (`review`) or 3 (`suspicious`). Scripts that treat every non-zero exit code as a failure need to be updated.
-*   The Go module path did not change, so `go install github.com/stn1slv/staraudit@latest` still installs 1.x. Use the release binaries or build from source.
+*   The Go module path is now `github.com/stn1slv/staraudit/v2`, so install with `go install github.com/stn1slv/staraudit/v2@latest`. This works from v2.0.1 on; v2.0.0 cannot be installed with `go install`.
 
 ## Development
 
