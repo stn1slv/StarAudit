@@ -17,12 +17,16 @@ const (
 	iso8601Format = "2006-01-02T15:04:05Z"
 
 	// Request to list users. Low cost in terms of rate limiting.
+	// stargazerCount is still returned when the list itself is withheld,
+	// which is how a restricted list is told apart from a repository
+	// without stars.
 	fetchUsersRequest = `{"query" : "{
 			rateLimit {
 				limit
 				remaining
 			}
 			repository(owner: \"$repoOwner\", name: \"$repoName\") {
+				stargazerCount
 				stargazers(first: $pagination) {
 					edges {
 						cursor
@@ -42,6 +46,7 @@ const (
 				remaining
 			}
 			repository(owner: \"$repoOwner\", name: \"$repoName\") {
+				stargazerCount
 				stargazers(first: $pagination) {
 					edges {
 						cursor
@@ -101,6 +106,8 @@ type listStargazersResponse struct {
 type gqlError struct {
 	Extensions gqlErrorExtension `json:"extensions"`
 	Message    string            `json:"message"`
+	Type       string            `json:"type"`
+	Path       []any             `json:"path"`
 }
 
 type gqlErrorExtension struct {
@@ -121,7 +128,9 @@ type rateLimit struct {
 }
 
 type repository struct {
-	Stargazers stargazers `json:"stargazers"`
+	// StargazerCount is nil in cache entries written before it was queried.
+	StargazerCount *int       `json:"stargazerCount"`
+	Stargazers     stargazers `json:"stargazers"`
 }
 
 type stargazers struct {

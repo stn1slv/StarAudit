@@ -24,7 +24,7 @@ func TestBuildRequestBody(t *testing.T) {
 			repoName:    "cameradar",
 			pagination:  42,
 
-			expectedBody: `{"query":"{ rateLimit{ limit remaining } repository(owner:\"ullaakut\",name:\"cameradar\"){ stargazers(first:42){ edges{ cursor } nodes{ login } } } }"}`,
+			expectedBody: `{"query":"{ rateLimit{ limit remaining } repository(owner:\"ullaakut\",name:\"cameradar\"){ stargazerCount stargazers(first:42){ edges{ cursor } nodes{ login } } } }"}`,
 		},
 		"fetch contributions request": {
 			baseRequest: fetchContributionsRequest,
@@ -32,7 +32,7 @@ func TestBuildRequestBody(t *testing.T) {
 			repoName:    "camerattack",
 			pagination:  84,
 
-			expectedBody: `{"query":"{ rateLimit{ limit remaining } repository(owner:\"ullaakut\",name:\"camerattack\"){ stargazers(first:84){ edges{ cursor } nodes{ login createdAt contributionsCollection(from:\"$dateFrom\",to:\"$dateTo\"){ restrictedContributionsCount totalIssueContributions totalCommitContributions totalRepositoryContributions totalPullRequestContributions totalPullRequestReviewContributions contributionCalendar{ totalContributions } } } } } }"}`,
+			expectedBody: `{"query":"{ rateLimit{ limit remaining } repository(owner:\"ullaakut\",name:\"camerattack\"){ stargazerCount stargazers(first:84){ edges{ cursor } nodes{ login createdAt contributionsCollection(from:\"$dateFrom\",to:\"$dateTo\"){ restrictedContributionsCount totalIssueContributions totalCommitContributions totalRepositoryContributions totalPullRequestContributions totalPullRequestReviewContributions contributionCalendar{ totalContributions } } } } } }"}`,
 		},
 	}
 

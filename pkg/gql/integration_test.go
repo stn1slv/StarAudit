@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"sync/atomic"
@@ -161,6 +162,121 @@ func TestFetchStargazersWithRejectedCredentials(t *testing.T) {
 	assert.Contains(t, err.Error(), "GITHUB_TOKEN", "the cause must name the credentials")
 }
 
+// TestFetchStargazersWithRestrictedList covers a repository the token holder
+// does not administer. Since 2026-06-30 GitHub answers with an empty list and
+// no error, which used to surface much later as a scan of 0 users.
+func TestFetchStargazersWithRestrictedList(t *testing.T) {
+	var requests atomic.Int32
+
+	stubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"data":{"repository":{"stargazerCount":239,"stargazers":{"edges":[],"nodes":[]}}}}`)
+	})
+
+	starauditCtx := integrationContext(t)
+
+	_, _, err := FetchStargazers(context.Background(), starauditCtx)
+	require.ErrorIs(t, err, ErrStargazersRestricted)
+
+	// A later run, possibly with a token that is allowed to see the list,
+	// must not be served the empty page from the cache.
+	_, _, err = FetchStargazers(context.Background(), starauditCtx)
+	require.ErrorIs(t, err, ErrStargazersRestricted)
+	assert.Equal(t, int32(2), requests.Load(), "the restricted page must not be cached")
+}
+
+// TestFetchStargazersWithForbiddenToken covers a fine-grained token, for which
+// GitHub reports the restricted list as a FORBIDDEN error. It used to be
+// retried for about five minutes before failing with an unclear message.
+func TestFetchStargazersWithForbiddenToken(t *testing.T) {
+	var requests atomic.Int32
+
+	stubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"data":{"repository":{"stargazerCount":239,"stargazers":null}},`+
+			`"errors":[{"type":"FORBIDDEN","path":["repository","stargazers"],"message":"Resource not accessible by personal access token"}]}`)
+	})
+
+	_, _, err := FetchStargazers(context.Background(), integrationContext(t))
+
+	require.ErrorIs(t, err, ErrStargazersRestricted)
+	assert.Contains(t, err.Error(), "Resource not accessible by personal access token", "the GitHub message must be kept")
+	assert.Equal(t, int32(1), requests.Load(), "a permission error must not be retried")
+}
+
+// TestFetchStargazersWithForbiddenErrorNotFirst covers a response where the
+// FORBIDDEN error is not the first one, which used to be retried again.
+func TestFetchStargazersWithForbiddenErrorNotFirst(t *testing.T) {
+	var requests atomic.Int32
+
+	stubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"data":{"repository":{"stargazerCount":239,"stargazers":null}},"errors":[`+
+			`{"type":"INTERNAL","message":"something else went wrong"},`+
+			`{"type":"FORBIDDEN","path":["repository","stargazers"],"message":"Resource not accessible by personal access token"}]}`)
+	})
+
+	_, _, err := FetchStargazers(context.Background(), integrationContext(t))
+
+	require.ErrorIs(t, err, ErrStargazersRestricted)
+	assert.Equal(t, int32(1), requests.Load(), "a permission error must not be retried")
+}
+
+// TestFetchStargazersWithOtherForbiddenError covers a FORBIDDEN error that is
+// not about the stargazer list, such as SAML enforcement. It must not be
+// retried, but it must not blame the stargazer restriction either.
+func TestFetchStargazersWithOtherForbiddenError(t *testing.T) {
+	var requests atomic.Int32
+
+	stubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"data":{"repository":null},`+
+			`"errors":[{"type":"FORBIDDEN","path":["repository"],"message":"Resource protected by organization SAML enforcement"}]}`)
+	})
+
+	_, _, err := FetchStargazers(context.Background(), integrationContext(t))
+
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrStargazersRestricted)
+	assert.Contains(t, err.Error(), "Resource protected by organization SAML enforcement")
+	assert.Equal(t, int32(1), requests.Load(), "a permission error must not be retried")
+}
+
+// TestFetchStargazersIgnoresCacheWithoutStargazerCount covers an empty first
+// page cached by a version that did not ask for stargazerCount. It cannot be
+// told apart from a restricted list, so it must be fetched again.
+func TestFetchStargazersIgnoresCacheWithoutStargazerCount(t *testing.T) {
+	var requests atomic.Int32
+
+	stubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, stargazerPage(0, 30))
+	})
+
+	starauditCtx := integrationContext(t)
+
+	filename := cacheEntryFilename(starauditCtx, listFilePagination(""))
+	require.NoError(t, os.MkdirAll(filepath.Dir(filename), 0o750))
+	require.NoError(t, os.WriteFile(filename, []byte(`{"data":{"repository":{"stargazers":{"edges":[],"nodes":[]}}}}`), 0o600))
+
+	_, totalUsers, err := FetchStargazers(context.Background(), starauditCtx)
+
+	require.NoError(t, err)
+	assert.Equal(t, uint(30), totalUsers)
+	assert.Equal(t, int32(1), requests.Load(), "the old cache entry must have been refetched")
+}
+
+func TestFetchStargazersWithoutStars(t *testing.T) {
+	stubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":{"repository":{"stargazerCount":0,"stargazers":{"edges":[],"nodes":[]}}}}`)
+	})
+
+	_, totalUsers, err := FetchStargazers(context.Background(), integrationContext(t))
+
+	require.NoError(t, err, "a repository without stars is not a restricted one")
+	assert.Zero(t, totalUsers)
+}
+
 func TestFetchStargazersServesFromCache(t *testing.T) {
 	var requests atomic.Int32
 
@@ -304,6 +420,46 @@ func TestFetchContributionsReturnsOnError(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("FetchContributions did not return: the progress bar is blocking shutdown")
 	}
+}
+
+// TestFetchContributionsWithForbiddenToken covers a fine-grained token that
+// loses access to the list between the list step, served from the cache of an
+// earlier run, and the contributions step.
+func TestFetchContributionsWithForbiddenToken(t *testing.T) {
+	var requests atomic.Int32
+
+	stubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"data":{"repository":{"stargazerCount":239,"stargazers":null}},`+
+			`"errors":[{"type":"FORBIDDEN","path":["repository","stargazers"],"message":"Resource not accessible by personal access token"}]}`)
+	})
+
+	_, err := FetchContributions(context.Background(), integrationContext(t), nil, time.Now().UTC().Year())
+
+	require.ErrorIs(t, err, ErrStargazersRestricted)
+	assert.Equal(t, int32(1), requests.Load(), "a permission error must not be retried")
+}
+
+// TestFetchContributionsWithRestrictedList covers the same situation with a
+// classic token, which gets empty pages instead of an error. It used to end
+// in a report computed on 0 users, with the empty pages cached for good.
+func TestFetchContributionsWithRestrictedList(t *testing.T) {
+	var requests atomic.Int32
+
+	stubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"data":{"repository":{"stargazerCount":239,"stargazers":{"edges":[],"nodes":[]}}}}`)
+	})
+
+	starauditCtx := integrationContext(t)
+	year := time.Now().UTC().Year()
+
+	_, err := FetchContributions(context.Background(), starauditCtx, nil, year)
+	require.ErrorIs(t, err, ErrStargazersRestricted)
+
+	_, err = FetchContributions(context.Background(), starauditCtx, nil, year)
+	require.ErrorIs(t, err, ErrStargazersRestricted)
+	assert.Equal(t, int32(2), requests.Load(), "the restricted page must not be cached")
 }
 
 // TestFetchContributionsCancels covers Ctrl-C during a scan.

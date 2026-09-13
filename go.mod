@@ -2,6 +2,8 @@ module github.com/stn1slv/staraudit
 
 go 1.26.0
 
+toolchain go1.26.8
+
 require (
 	github.com/Ullaakut/disgo v0.3.1
 	github.com/cenkalti/backoff/v5 v5.0.3

@@ -10,7 +10,8 @@ Specific instructions and best practices for the StarAudit project.
 
 ## Project Structure
 
-- `main.go`: Entry point, handles CLI arguments and orchestrates the scan.
+- `main.go`: Entry point. Parses CLI arguments and runs the star history analysis, or the trust scan with `--trust`.
+- `pkg/history/`: Star history analysis (the default mode): fetches `/stargazers/history` over REST, scores star bursts, and renders text and JSON.
 - `pkg/gql/`: Core logic for interacting with GitHub GraphQL API, including pagination and caching.
 - `pkg/trust/`: The trust algorithm logic, factors, and report rendering.
 - `pkg/signature/`: Logic for signing reports and verifying signatures.
@@ -20,9 +21,9 @@ Specific instructions and best practices for the StarAudit project.
 
 ### Go (Golang)
 
-- **Version**: Go 1.25+ (pinned in `go.mod`).
+- **Version**: Go 1.26+ (pinned in `go.mod`, which also sets the `toolchain` used by CI and releases).
 - **Concurrency**: Use `golang.org/x/sync/errgroup` for parallel processing.
-- **API**: GitHub GraphQL API via `pkg/gql`.
+- **API**: GitHub REST star history endpoint via `pkg/history`; GitHub GraphQL API via `pkg/gql` (trust scan only).
 - **UI**: `github.com/Ullaakut/disgo` for CLI output and `github.com/vbauerster/mpb/v4` for progress bars.
 
 ## Automation & Tooling
@@ -48,5 +49,5 @@ We use a `Makefile` as the single entry point for development tasks.
 
 ## Security
 
-- **GitHub Token**: Required via `GITHUB_TOKEN` environment variable.
+- **GitHub Token**: `GITHUB_TOKEN` is optional for the star history analysis and required for `--trust`, where it must belong to an admin or collaborator of the repository (GitHub restricts stargazer lists since 2026-06-30).
 - **Private Key**: Report signing and upload are opt-in. Set `STARAUDIT_PRIVATE_KEY` to a PEM encoded PKCS#1 RSA key to enable them; when it is unset, the report is still computed and rendered locally, it is simply not uploaded. `STARAUDIT_PUBLIC_KEY` is the matching key used by `signature.Check`. No key is embedded in the binary.
