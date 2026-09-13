@@ -24,9 +24,15 @@ type document struct {
 	} `json:"error"`
 }
 
-// runWith runs the command with the star history replaced by fetch, and
-// returns the exit code and what was written to stdout.
-func runWith(t *testing.T, fetch fetchFunc, args ...string) (int, string) {
+// result is what one run of the command produced.
+type result struct {
+	code   int
+	stdout string
+	stderr string
+}
+
+// runWith runs the command with the star history replaced by fetch.
+func runWith(t *testing.T, fetch fetchFunc, args ...string) result {
 	t.Helper()
 
 	t.Setenv("GITHUB_TOKEN", "")
@@ -40,7 +46,7 @@ func runWith(t *testing.T, fetch fetchFunc, args ...string) (int, string) {
 
 	code := run(args, &stdout, &stderr)
 
-	return code, stdout.String()
+	return result{code: code, stdout: stdout.String(), stderr: stderr.String()}
 }
 
 // notCalled fails the test if the star history is requested.
@@ -113,11 +119,11 @@ func TestRunReportsTheVerdict(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			code, stdout := runWith(t, returning(test.series, nil), "--json", "owner/repo")
+			res := runWith(t, returning(test.series, nil), "--json", "owner/repo")
 
-			assert.Equal(t, test.expectedCode, code)
+			assert.Equal(t, test.expectedCode, res.code)
 
-			doc := decode(t, stdout)
+			doc := decode(t, res.stdout)
 			assert.Equal(t, "owner/repo", doc.Repository)
 			assert.Equal(t, test.expectedVerdict, doc.Verdict)
 		})
@@ -131,7 +137,13 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 	tests := map[string][]string{
 		"missing repository":             {"--json"},
 		"repository without a slash":     {"--json", "owner"},
+		"repository without an owner":    {"--json", "/repo"},
+		"repository without a name":      {"--json", "owner/"},
+		"repository with two slashes":    {"--json", "owner/repo/extra"},
+		"more than one repository":       {"--json", "owner/repo", "other/repo"},
 		"unknown flag":                   {"--json", "--no-such-flag", "0.5", "owner/repo"},
+		"unknown flag before --json":     {"--no-such-flag", "--json", "owner/repo"},
+		"unknown flag before --json=1":   {"--no-such-flag", "--json=true", "owner/repo"},
 		"value that does not parse":      {"--json", "--burst-review=abc", "owner/repo"},
 		"threshold that is not a number": {"--json", "--peak-review=NaN", "owner/repo"},
 		"threshold out of range":         {"--json", "--burst-review=2", "owner/repo"},
@@ -140,42 +152,90 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 
 	for name, args := range tests {
 		t.Run(name, func(t *testing.T) {
-			code, stdout := runWith(t, notCalled(t), args...)
+			res := runWith(t, notCalled(t), args...)
 
-			assert.Equal(t, exitError, code)
-			assert.Equal(t, codeInvalidArguments, decode(t, stdout).Error.Code)
+			assert.Equal(t, exitError, res.code)
+			assert.Equal(t, codeInvalidArguments, decode(t, res.stdout).Error.Code)
 		})
 	}
 }
 
-// TestRunRejectsUnparsableEnvironmentValues covers a variable that used to
-// turn into 0 without an error, which switched the suspicious rule off.
+// TestRunRejectsUnparsableEnvironmentValues covers variables that the viper
+// getters used to turn into a zero value without an error, which switched
+// rules off or selected the wrong mode.
 func TestRunRejectsUnparsableEnvironmentValues(t *testing.T) {
-	t.Setenv("STARAUDIT_TAIL_SUSPICIOUS", "abc")
+	tests := map[string][2]string{
+		"threshold":             {"STARAUDIT_TAIL_SUSPICIOUS", "abc"},
+		"minimum with decimals": {"STARAUDIT_MIN_STARS", "50.9"},
+		"trust switch":          {"STARAUDIT_TRUST", "yes"},
+		"verbose switch":        {"STARAUDIT_VERBOSE", "maybe"},
+		"star limit":            {"STARAUDIT_STARS", "abc"},
+	}
 
-	code, stdout := runWith(t, notCalled(t), "--json", "owner/repo")
+	for name, variable := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(variable[0], variable[1])
 
-	assert.Equal(t, exitError, code)
-	assert.Equal(t, codeInvalidArguments, decode(t, stdout).Error.Code)
+			res := runWith(t, notCalled(t), "--json", "owner/repo")
+
+			assert.Equal(t, exitError, res.code)
+			assert.Equal(t, codeInvalidArguments, decode(t, res.stdout).Error.Code)
+		})
+	}
+}
+
+func TestRunRejectsUnparsableJSONSwitch(t *testing.T) {
+	t.Setenv("STARAUDIT_JSON", "abc")
+
+	res := runWith(t, notCalled(t), "owner/repo")
+
+	assert.Equal(t, exitError, res.code)
+	assert.Contains(t, res.stderr, "json")
+}
+
+func TestRunReadsSwitchesFromTheEnvironment(t *testing.T) {
+	t.Setenv("STARAUDIT_JSON", "true")
+
+	res := runWith(t, returning(seriesOf([2]int{365, 3}), nil), "owner/repo")
+
+	assert.Equal(t, exitPass, res.code)
+	assert.Equal(t, "pass", decode(t, res.stdout).Verdict)
 }
 
 func TestRunWithoutRepositoryInTextMode(t *testing.T) {
-	code, _ := runWith(t, notCalled(t))
+	res := runWith(t, notCalled(t))
 
-	assert.Equal(t, exitError, code, "a missing repository must not look like a pass")
+	assert.Equal(t, exitError, res.code, "a missing repository must not look like a pass")
 }
 
 func TestRunHelp(t *testing.T) {
-	code, _ := runWith(t, notCalled(t), "--help")
+	res := runWith(t, notCalled(t), "--help")
 
-	assert.Equal(t, exitPass, code)
+	assert.Equal(t, exitPass, res.code)
 }
 
 func TestRunReportsFetchErrors(t *testing.T) {
 	notFound := &history.Error{Code: history.CodeNotFound, Message: "repository not found"}
 
-	code, stdout := runWith(t, returning(history.Series{}, notFound), "--json", "owner/repo")
+	res := runWith(t, returning(history.Series{}, notFound), "--json", "owner/repo")
 
-	assert.Equal(t, exitError, code)
-	assert.Equal(t, history.CodeNotFound, decode(t, stdout).Error.Code)
+	assert.Equal(t, exitError, res.code)
+	assert.Equal(t, history.CodeNotFound, decode(t, res.stdout).Error.Code)
+}
+
+// TestRunTextReportWithoutTerminal covers a report redirected to a file or a
+// CI log, which must not hold color escape codes.
+func TestRunTextReportWithoutTerminal(t *testing.T) {
+	res := runWith(t, returning(seriesOf([2]int{8, 0}, [2]int{13, 10}, [2]int{1, 50}), nil), "owner/repo")
+
+	assert.Equal(t, exitReview, res.code)
+	assert.Contains(t, res.stdout, "Verdict: REVIEW")
+	assert.NotContains(t, res.stdout, "\x1b[")
+}
+
+func TestRunTrustScanWithoutToken(t *testing.T) {
+	res := runWith(t, notCalled(t), "--trust", "owner/repo")
+
+	assert.Equal(t, exitError, res.code)
+	assert.Contains(t, res.stderr, "admin or collaborator")
 }
