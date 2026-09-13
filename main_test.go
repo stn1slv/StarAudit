@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stn1slv/staraudit/pkg/history"
+	"github.com/stn1slv/staraudit/v2/pkg/history"
 )
 
 type fetchFunc = func(ctx context.Context, owner, repo, token string) (history.Series, error)

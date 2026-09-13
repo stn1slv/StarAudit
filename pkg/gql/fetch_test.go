@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/stn1slv/staraudit/pkg/context"
+	"github.com/stn1slv/staraudit/v2/pkg/context"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

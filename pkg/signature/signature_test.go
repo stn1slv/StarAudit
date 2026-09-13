@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stn1slv/staraudit/pkg/trust"
+	"github.com/stn1slv/staraudit/v2/pkg/trust"
 )
 
 // generateKeyPair returns a fresh PEM encoded RSA key pair, in the encodings

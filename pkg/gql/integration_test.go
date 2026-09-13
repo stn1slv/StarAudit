@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	staraudit_context "github.com/stn1slv/staraudit/pkg/context"
+	staraudit_context "github.com/stn1slv/staraudit/v2/pkg/context"
 )
 
 // stubAPI points the package at a test server for the duration of the test.

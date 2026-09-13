@@ -1,4 +1,4 @@
-module github.com/stn1slv/staraudit
+module github.com/stn1slv/staraudit/v2
 
 go 1.26.0
 
