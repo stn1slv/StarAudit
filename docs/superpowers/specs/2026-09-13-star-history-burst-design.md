@@ -23,7 +23,7 @@ The main consumer is the awesome-integration PR workflow (`pr-spam-guard.yml`), 
 
 - Policy checks such as minimum repository age or minimum star count for a list. These stay in `pr-spam-guard.yml`.
 - A statistical anomaly score. Rejected during design because real launches look like extreme outliers and the result is hard to explain.
-- Caching of star history. A full history costs 1 to 13 requests, and a cache would give CI stale results.
+- Caching of star history. A full history costs one request per 30 weeks plus one (17 for a 9-year-old repository), and a cache would give CI stale results.
 - Changes to the trust scan, the signed report upload or the badge.
 
 ## Command line
@@ -43,7 +43,7 @@ All flags can also be set through `STARAUDIT_*` environment variables, as the ex
 
 `GITHUB_TOKEN` is optional for the default mode. When set, it is sent as a bearer token (5000 requests per hour instead of 60). It stays required for `--trust`.
 
-Flag validation happens before any request: every threshold must be in `[0, 1]`, `--burst-review` must not exceed `--burst-suspicious`, and `--min-stars` must not be negative. A failure exits with code 1 and error code `invalid_arguments`.
+Flag validation happens before any request: every threshold must be in `[0, 1]` (so `NaN` and infinite values are rejected), `--burst-review` must not exceed `--burst-suspicious`, and `--min-stars` must not be negative. A missing repository argument, an unknown flag, and a flag or `STARAUDIT_*` value that does not parse are argument errors too. Every argument error exits with code 1 and error code `invalid_arguments`, never with a verdict code. `--help` exits with 0.
 
 ### Exit codes
 
@@ -212,10 +212,12 @@ On error with `--json`, stdout holds `{"schema_version": 1, "repository": "owner
 | HTTP 404 | "repository not found, or the token cannot see it". No retry. | `not_found` |
 | HTTP 401 | "GitHub rejected the credentials, check GITHUB_TOKEN". No retry. | `unauthorized` |
 | HTTP 403 or 429 with `X-RateLimit-Remaining: 0` | Stop at once and report the reset time from `X-RateLimit-Reset`. Without a token, suggest setting `GITHUB_TOKEN`. No waiting. | `rate_limited` |
-| HTTP 403 or 429 with `Retry-After` | Wait the given number of seconds, then retry. Counts toward the attempt limit. | retried |
+| HTTP 403 or 429 with `Retry-After` of at most 60 seconds | Wait the given number of seconds, then retry. Counts toward the attempt limit. | retried |
+| HTTP 403 or 429 with `Retry-After` above 60 seconds | Stop at once. A CI job should not wait that long. | `rate_limited` |
+| HTTP 429 without either header, or 403 whose message mentions a rate limit | Stop at once (secondary rate limit). | `rate_limited` |
 | HTTP 5xx or network error | Exponential backoff (`cenkalti/backoff/v5`), at most 5 attempts. | `api_error` after the last attempt |
 | HTTP 422 or any other status | No retry. | `api_error` |
-| Week fails validation | No retry. | `api_error` |
+| Week fails validation, or the weeks are not exactly 7 days apart once duplicates are removed | No retry. Each page is checked as soon as it arrives. A week that comes back twice (the pages shift when a new week starts during paging) is kept once. | `api_error` |
 | Context cancelled (Ctrl-C, SIGTERM) | Stop at once, exit 1. | none |
 
 A repository with 0 stars is not an error: it gets `review` with `few_stars`.

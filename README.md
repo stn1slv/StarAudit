@@ -15,7 +15,7 @@ StarAudit detects illegitimate GitHub stars, which are often used to artificiall
 
 ## Key Features
 
-*   **Star History Analysis (default)**: Detects star bursts from the GitHub star history endpoint. Works on any public repository, needs 1 to 13 API requests, and does not require a token.
+*   **Star History Analysis (default)**: Detects star bursts from the GitHub star history endpoint. Works on any public repository and does not require a token. It needs one API request per 30 weeks of history, plus one: 2 for a young repository, 17 for a 9-year-old one.
 *   **CI Friendly**: JSON output and an exit code for each verdict, so workflows can act on the result without parsing text.
 *   **Weighted Trust Algorithm** (`--trust`): Computes trust based on contribution age, private activity, and diversity of interactions (commits, issues, PRs, reviews).
 *   **Comparative Reporting** (`--trust`): Compares the "early adopters" of a repository against random samples to detect inorganic growth patterns.

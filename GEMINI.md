@@ -21,7 +21,7 @@ Specific instructions and best practices for the StarAudit project.
 
 ### Go (Golang)
 
-- **Version**: Go 1.25+ (pinned in `go.mod`).
+- **Version**: Go 1.26+ (pinned in `go.mod`, which also sets the `toolchain` used by CI and releases).
 - **Concurrency**: Use `golang.org/x/sync/errgroup` for parallel processing.
 - **API**: GitHub REST star history endpoint via `pkg/history`; GitHub GraphQL API via `pkg/gql` (trust scan only).
 - **UI**: `github.com/Ullaakut/disgo` for CLI output and `github.com/vbauerster/mpb/v4` for progress bars.
