@@ -24,16 +24,19 @@ jobs:
       - name: Test
         run: go test -v ./...
 
+      # Build into dist/, which .gitignore covers: an untracked binary in the
+      # repository root would mark the next builds as vcs.modified.
       - name: Build binaries
         env:
           CGO_ENABLED: 0
         run: |
-          GOOS=linux GOARCH=amd64 go build -v -o staraudit-linux-amd64
-          GOOS=windows GOARCH=amd64 go build -v -o staraudit-windows-amd64.exe
-          GOOS=darwin GOARCH=amd64 go build -v -o staraudit-darwin-amd64
-          GOOS=darwin GOARCH=arm64 go build -v -o staraudit-darwin-arm64
+          GOOS=linux GOARCH=amd64 go build -v -o dist/staraudit-linux-amd64
+          GOOS=windows GOARCH=amd64 go build -v -o dist/staraudit-windows-amd64.exe
+          GOOS=darwin GOARCH=amd64 go build -v -o dist/staraudit-darwin-amd64
+          GOOS=darwin GOARCH=arm64 go build -v -o dist/staraudit-darwin-arm64
 
       - name: Write checksums
+        working-directory: dist
         run: sha256sum staraudit-* > checksums.txt
 
       - name: Create release
@@ -41,7 +44,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >-
           gh release create "$GITHUB_REF_NAME"
-          staraudit-* checksums.txt
+          dist/staraudit-* dist/checksums.txt
           --verify-tag
           --title "Release $GITHUB_REF_NAME"
           --generate-notes
