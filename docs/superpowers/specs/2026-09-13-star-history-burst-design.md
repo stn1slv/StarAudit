@@ -235,3 +235,12 @@ A repository with 0 stars is not an error: it gets `review` with `few_stars`.
 
 - `README.md`: new default mode, `--trust`, all flags, exit codes and the JSON format. Also correct the statement that a token with `repo` rights is enough for the trust scan.
 - `CLAUDE.md`: add `pkg/history/` to the project structure.
+
+## Release
+
+This change ships as StarAudit 2.0.0, because the default mode and the exit codes change. The Go module path stays `github.com/stn1slv/staraudit` (decided on 2026-09-13), so the release is the `v2.0.0` tag with its GitHub release binaries, and `go install github.com/stn1slv/staraudit@latest` keeps resolving to 1.x. The README gets an "Upgrading from 1.x" section that says so.
+
+## Decisions added during planning
+
+- `--json` together with `--trust` is rejected with `invalid_arguments`, because the trust scan has no JSON output.
+- A cancelled run (Ctrl-C, SIGTERM) writes no JSON document, even with `--json`.
