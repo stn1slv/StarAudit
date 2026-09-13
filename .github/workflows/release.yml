@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build
@@ -12,101 +15,33 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        
+
       - name: Set up Go environment
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-        
-      - name: Get dependencies
-        run: go get -v -t -d ./...
-      
+
       - name: Test
         run: go test -v ./...
-        
-      - name: Build for Linux
-        run: go build -v -o staraudit-linux-amd64
-        env:
-          GOOS: linux
-          GOARCH: amd64
-          CGO_ENABLED: 0
-          GO111MODULE: on
-      
-      - name: Build for Windows
-        run: go build -v -o staraudit-windows-amd64.exe
-        env:
-          GOOS: windows
-          GOARCH: amd64
-          CGO_ENABLED: 0
-          GO111MODULE: on
-            
-      - name: Build for MacOS (AMD64)
-        run: go build -v -o staraudit-darwin-amd64
-        env:
-          GOOS: darwin
-          GOARCH: amd64
-          CGO_ENABLED: 0
-          GO111MODULE: on
-      
-      - name: Build for MacOS (ARM64)
-        run: go build -v -o staraudit-darwin-arm64
-        env:
-          GOOS: darwin
-          GOARCH: arm64
-          CGO_ENABLED: 0
-          GO111MODULE: on
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
+      - name: Build binaries
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
+          CGO_ENABLED: 0
+        run: |
+          GOOS=linux GOARCH=amd64 go build -v -o staraudit-linux-amd64
+          GOOS=windows GOARCH=amd64 go build -v -o staraudit-windows-amd64.exe
+          GOOS=darwin GOARCH=amd64 go build -v -o staraudit-darwin-amd64
+          GOOS=darwin GOARCH=arm64 go build -v -o staraudit-darwin-arm64
 
-      - name: Upload Release Asset for Linux
-        id: upload-release-asset-linux
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./staraudit-linux-amd64
-          asset_name: staraudit-linux-amd64
-          asset_content_type: application/octet-stream
+      - name: Write checksums
+        run: sha256sum staraudit-* > checksums.txt
 
-      - name: Upload Release Asset for Windows
-        id: upload-release-asset-windows
-        uses: actions/upload-release-asset@v1
+      - name: Create release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./staraudit-windows-amd64.exe
-          asset_name: staraudit-windows-amd64.exe
-          asset_content_type: application/octet-stream
-      
-      - name: Upload Release Asset for MacOS (AMD64)
-        id: upload-release-asset-macos-amd64
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./staraudit-darwin-amd64
-          asset_name: staraudit-darwin-amd64
-          asset_content_type: application/octet-stream
-
-      - name: Upload Release Asset for MacOS (ARM64)
-        id: upload-release-asset-macos-arm64
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./staraudit-darwin-arm64
-          asset_name: staraudit-darwin-arm64
-          asset_content_type: application/octet-stream
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          staraudit-* checksums.txt
+          --verify-tag
+          --title "Release $GITHUB_REF_NAME"
+          --generate-notes
