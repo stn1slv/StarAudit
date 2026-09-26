@@ -41,8 +41,10 @@ build:
 	go build -o $(BINARY_NAME) main.go
 
 .PHONY: docker
+# The image copies a prebuilt binary. It must be static, because the base is scratch.
 docker:
 	@echo "Building docker image..."
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/staraudit-linux-amd64
 	docker build -t $(DOCKER_IMAGE) .
 
 .PHONY: run
