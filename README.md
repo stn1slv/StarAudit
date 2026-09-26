@@ -21,7 +21,6 @@ StarAudit detects illegitimate GitHub stars, which are often used to artificiall
 *   **Comparative Reporting** (`--trust`): Compares the "early adopters" of a repository against random samples to detect inorganic growth patterns.
 *   **Concurrent Analysis** (`--trust`): Uses `errgroup` to fetch contribution data across multiple years and users simultaneously.
 *   **Local Caching** (`--trust`): Caches GitHub GraphQL responses to minimize API usage and respect rate limits.
-*   **Signed Reports** (`--trust`): Generates RSA-signed reports to ensure data integrity when transmitted to Astrolab.
 
 ## Star history analysis
 
@@ -160,7 +159,6 @@ Reason codes are `no_tail`, `burst`, `short_history`, `peak_day` and `few_stars`
 ### Environment variables
 
 *   **`GITHUB_TOKEN`**: (Optional for the star history analysis, required for `--trust`) A GitHub personal access token. For `--trust`, it must belong to an admin or collaborator of the repository.
-*   **`STARAUDIT_PRIVATE_KEY`**: (Optional, `--trust` only) PEM encoded PKCS#1 RSA key. Report signing and upload to Astrolab are opt-in: without this key the report is still computed and rendered locally, it is simply not uploaded.
 
 ## Upgrading from 1.x
 
